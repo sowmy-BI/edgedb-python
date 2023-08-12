@@ -145,6 +145,7 @@ class Generator:
         print_msg(f"Found EdgeDB project: {C.BOLD}{self._project_dir}{C.ENDC}")
         self._client = edgedb.create_client(**_get_conn_args(args))
         self._single_mode_files = args.file
+        self._cwd = args.cwd
         self._search_dirs = []
         for search_dir in args.dir or []:
             search_dir = pathlib.Path(search_dir).absolute()
@@ -161,6 +162,7 @@ class Generator:
                 sys.exit(1)
         self._method_names = set()
         self._describe_results = []
+        self._cwd_describe_result = {}
 
         self._cache = {}
         self._imports = set()
@@ -194,6 +196,8 @@ class Generator:
                 self._async = is_async
                 if self._single_mode_files:
                     self._generate_single_file(suffix)
+                elif self._cwd :
+                    self._generate_files_based_on_directory()
                 else:
                     self._generate_files(suffix)
                 self._new_file()
@@ -222,27 +226,33 @@ class Generator:
                 sys.exit(17)
             self._method_names.add(name)
         dr = self._client._describe_query(query, inject_type_names=True)
-        self._describe_results.append((name, source, query, dr))
+        if (self._cwd):
+            parent_dir = str(source.parent)
+            if parent_dir in self._cwd_describe_result:
+                self._cwd_describe_result[parent_dir].append((name, source, query, dr))
+            else:
+                pass
+                self._cwd_describe_result[parent_dir] = [(name, source, query, dr)]
+        else:
+            self._describe_results.append((name, source, query, dr))
 
     def _generate_files(self, suffix: str):
-        for name, source, query, dr in self._describe_results:
-            target = source.parent / f"{name}{suffix}"
-            print_msg(f"{C.BOLD}Generating{C.ENDC} {C.BLUE}{target}{C.ENDC}")
-            self._new_file()
-            content = self._generate(name, query, dr)
-            buf = io.StringIO()
-            self._write_comments(buf, [source])
-            self._write_definitions(buf)
-            buf.write(content)
-            with target.open("w") as f:
-                f.write(buf.getvalue())
+            for name, source, query, dr in self._describe_results:
+                target =  source.parent / f"{suffix}" 
+                print_msg(f"{C.BOLD}Generating{C.ENDC} {C.BLUE}{target}{C.ENDC}")
+                content = self._generate(name, query, dr)
+                buf = io.StringIO()
+                self._write_comments(buf, [source])
+                self._write_definitions(buf)
+                buf.write(content)
+                with target.open("w") as f:
+                    f.write(buf.getvalue())
 
-    def _generate_single_file(self, suffix: str):
-        print_msg(f"{C.BOLD}Generating single file output...{C.ENDC}")
+    def _create_buffer(self, result: list):
         buf = io.StringIO()
         output = []
         sources = []
-        for name, source, query, dr in sorted(self._describe_results):
+        for name, source, query, dr in sorted(result):
             sources.append(source)
             output.append(self._generate(name, query, dr))
         self._write_comments(buf, sources)
@@ -252,7 +262,23 @@ class Generator:
             if i < len(output) - 1:
                 print(file=buf)
                 print(file=buf)
+        return buf
+    
+    def _generate_files_based_on_directory(self): 
+        for parent_dir_path in self._cwd_describe_result.keys():
+            print_msg(f"{C.BOLD}Generating{C.ENDC} {C.BLUE}{parent_dir_path}{C.ENDC}")
 
+            result = self._cwd_describe_result[parent_dir_path]
+            buf = self._create_buffer(result)
+
+            suffix = parent_dir_path[parent_dir_path.rfind('/')+ 1: ]
+            target = pathlib.Path(parent_dir_path) / f"{suffix}.py"
+            with target.open("w") as f:
+                f.write(buf.getvalue())
+
+    def _generate_single_file(self, suffix: str):
+        print_msg(f"{C.BOLD}Generating single file output...{C.ENDC}")
+        buf = self._create_buffer(self._describe_results)
         for target in self._single_mode_files:
             if target:
                 target = pathlib.Path(target).absolute()
@@ -317,6 +343,7 @@ class Generator:
 
         name_hint = f"{self._snake_to_camel(name)}Result"
         out_type = self._generate_code(dr.output_type, name_hint)
+
         if dr.output_cardinality.is_multi():
             if SYS_VERSION_INFO >= (3, 9):
                 out_type = f"list[{out_type}]"

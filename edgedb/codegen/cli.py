@@ -51,6 +51,12 @@ parser.add_argument(
     choices=["default", "strict", "no_host_verification", "insecure"],
 )
 parser.add_argument(
+    "--cwd",
+    action="store_true",
+    default=False,
+    help="generate single python file for each directory",
+)
+parser.add_argument(
     "--file",
     action="append",
     nargs="?",
